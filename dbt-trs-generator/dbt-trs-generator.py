@@ -254,12 +254,12 @@ def main():
         st.header("⚙️ 設定")
         source_schema = st.text_input("Source Schema", value="test", help="dbtのsource schemaを入力")
         source_table = st.text_input("Source Table", value="customer_master", help="外部テーブル名を入力")
-        model_name = st.text_input("Model Name", value="stg_customer", help="生成するモデル名を入力")
+        model_name = st.text_input("Model Name", value="trs_customer_master", help="生成するモデル名を入力")
         model_description = st.text_area(
             "Model Description", 
             value="", 
             help="モデルの説明（models.ymlのdescriptionに使用）",
-            placeholder="例: 顧客マスタのステージングテーブル"
+            placeholder="例: 顧客マスタ"
         )
         
         st.markdown("---")
