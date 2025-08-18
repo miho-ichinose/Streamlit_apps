@@ -5,10 +5,11 @@
 
 ## アプリ一覧
 - dbt-trs-generator：
-- streamlit_data_masking：
+- streamlit_data_masking：csvファイルマスキングアプリ
 
 ## 留意点
 - python本体とstreamlit、その他アプリ実行に必要なパッケージのインストールが必要です 
+
 
 
 
