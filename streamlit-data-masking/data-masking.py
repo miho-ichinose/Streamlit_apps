@@ -13,7 +13,7 @@
 #   * SHA256ハッシュ（任意ソルト）
 #   * トークン化（安定マッピング）/ マップのJSON入出力
 #   * 正規表現で一致部分のみマスク
-#   * プリセット（Email/Phone/CreditCard）
+#   * プリセット（Email/Phone/CreditCard/住所）
 # - 出力: CSV/TSV/Excel、トークンマップ(JSON)、実行ポリシー(JSON)
 # ------------------------------------------------------------
 
@@ -33,9 +33,6 @@ st.title("🔒 データマスキング専用ツール")
 # Utility
 # -------------------------------
 
-
-
-
 def read_table_from_path(path: str, sheet_name=None, header=0) -> pd.DataFrame:
     lower = path.lower()
     # Excel
@@ -43,10 +40,10 @@ def read_table_from_path(path: str, sheet_name=None, header=0) -> pd.DataFrame:
         return pd.read_excel(path, sheet_name=sheet_name, header=header)
     # Gzip圧縮CSV/TSV
     if lower.endswith(".gz"):
-        sep = "	" if lower.endswith(".tsv.gz") or ".tsv" in lower else ","
+        sep = "\t" if lower.endswith(".tsv.gz") or ".tsv" in lower else ","
         return pd.read_csv(path, compression="gzip", sep=sep, header=header)
     # 通常CSV/TSV
-    sep = "	" if lower.endswith(".tsv") else ","
+    sep = "\t" if lower.endswith(".tsv") else ","
     try:
         return pd.read_csv(path, sep=sep, header=header)
     except Exception:
@@ -64,9 +61,9 @@ def read_preview_from_path(path: str, sheet_name=None, header=0, nrows: int = 20
                 df_full = pd.read_excel(path, sheet_name=sheet_name, header=header)
                 return df_full.head(nrows)
         if lower.endswith(".gz"):
-            sep = "	" if lower.endswith(".tsv.gz") or ".tsv" in lower else ","
+            sep = "\t" if lower.endswith(".tsv.gz") or ".tsv" in lower else ","
             return pd.read_csv(path, compression="gzip", sep=sep, header=header, nrows=nrows)
-        sep = "	" if lower.endswith(".tsv") else ","
+        sep = "\t" if lower.endswith(".tsv") else ","
         return pd.read_csv(path, sep=sep, header=header, nrows=nrows)
     except Exception:
         df = read_table_from_path(path, sheet_name=sheet_name, header=header)
@@ -113,11 +110,125 @@ def mask_regex_sub(s: pd.Series, pattern: str, repl_char: str = "*") -> pd.Serie
         return s
     return s.astype(str).apply(lambda x: reg.sub(lambda m: repl_char * len(m.group(0)), x) if x else "")
 
+
+# 住所マスキング関数
+def mask_address_to_prefecture(address: str) -> str:
+    """住所を都道府県レベルまでにマスク（郵便番号は削除）"""
+    if not address:
+        return ""
+    
+    # 郵便番号を除去（先頭の数字とハイフンのパターン）
+    address_clean = re.sub(r'^\d{3}-?\d{4}\s*', '', address.strip())
+    
+    # 都道府県のパターン（住所の任意の位置から探す）
+    prefecture_pattern = r'(東京都|北海道|(?:京都|大阪)府|(?:神奈川|埼玉|千葉|愛知|兵庫|福岡|北海道|青森|岩手|宮城|秋田|山形|福島|茨城|栃木|群馬|新潟|富山|石川|福井|山梨|長野|岐阜|静岡|三重|滋賀|奈良|和歌山|鳥取|島根|岡山|広島|山口|徳島|香川|愛媛|高知|佐賀|長崎|熊本|大分|宮崎|鹿児島|沖縄)県)'
+    
+    # 住所全体から都道府県を探す
+    match = re.search(prefecture_pattern, address_clean)
+    
+    if match:
+        return match.group(1)
+    else:
+        return ""
+
+
+def mask_address_to_city(address: str) -> str:
+    """住所を市区町村レベルまでにマスク（郵便番号は削除）"""
+    if not address:
+        return ""
+    
+    # 郵便番号を除去
+    address_clean = re.sub(r'^\d{3}-?\d{4}\s*', '', address.strip())
+    
+    # 都道府県のパターン
+    prefecture_pattern = r'(東京都|北海道|(?:京都|大阪)府|(?:神奈川|埼玉|千葉|愛知|兵庫|福岡|北海道|青森|岩手|宮城|秋田|山形|福島|茨城|栃木|群馬|新潟|富山|石川|福井|山梨|長野|岐阜|静岡|三重|滋賀|奈良|和歌山|鳥取|島根|岡山|広島|山口|徳島|香川|愛媛|高知|佐賀|長崎|熊本|大分|宮崎|鹿児島|沖縄)県)'
+    
+    # 都道府県を探す
+    match_pref = re.search(prefecture_pattern, address_clean)
+    
+    if match_pref:
+        prefecture = match_pref.group(1)
+        # 都道府県の後の部分を取得
+        pref_end = match_pref.end()
+        rest = address_clean[pref_end:]
+        
+        # 市区町村のパターン（郡部も含む）
+        city_patterns = [
+            r'^(.+?市)',  # 市
+            r'^(.+?区)',  # 区（政令指定都市の区）
+            r'^(.+?町)',  # 町
+            r'^(.+?村)',  # 村
+            r'^(.+?郡.+?[町村])',  # 郡部の町村
+        ]
+        
+        # 市区町村を抽出
+        city = ""
+        for pattern in city_patterns:
+            match_city = re.match(pattern, rest)
+            if match_city:
+                city = match_city.group(1)
+                break
+        
+        if city:
+            return prefecture + city
+        else:
+            return prefecture
+    else:
+        # 都道府県が見つからない場合、市区町村だけを探す
+        city_patterns = [
+            r'(.+?[市区町村])',  # 一般的な市区町村
+            r'(.+?郡.+?[町村])',  # 郡部の町村
+        ]
+        
+        for pattern in city_patterns:
+            match_city = re.search(pattern, address_clean)
+            if match_city:
+                city = match_city.group(1)
+                return city
+        
+        return ""
+
+
+def mask_address_custom(address: str, level: str = "prefecture") -> str:
+    """住所を指定レベルまでマスク"""
+    if level == "prefecture":
+        return mask_address_to_prefecture(address)
+    elif level == "city":
+        return mask_address_to_city(address)
+    else:
+        return address
+
+
 # ---- 追加: チャンク処理ユーティリティ ----
 
 def _sep_from_path(path: str) -> str:
     lower = path.lower()
-    return "	" if lower.endswith(".tsv") or lower.endswith(".tsv.gz") else ","
+    return "\t" if lower.endswith(".tsv") or lower.endswith(".tsv.gz") else ","
+
+
+# プリセット関数（住所マスキングを追加）
+PRESETS = {
+    "Email(ドメインをマスク)": {
+        "func": lambda x: re.sub(r"([A-Za-z0-9._%+-]+)@([A-Za-z0-9.-]+)", lambda m: m.group(1) + "@" + "*" * len(m.group(2)), x),
+        "has_level": False
+    },
+    "Phone(中間をマスク)": {
+        "func": lambda x: re.sub(r"(\d{2,4})([- ]?)(\d{2,4})([- ]?)(\d{3,4})", lambda m: m.group(1) + m.group(2) + "*" * len(m.group(3)) + m.group(4) + m.group(5), x),
+        "has_level": False
+    },
+    "CreditCard(最後4桁残し)": {
+        "func": lambda x: (lambda digits: ("*" * max(0, len(digits) - 4)) + digits[-4:])(re.sub(r"[^\d]", "", x)),
+        "has_level": False
+    },
+    "住所(都道府県まで)": {
+        "func": lambda x: mask_address_to_prefecture(x),
+        "has_level": False
+    },
+    "住所(市区町村まで)": {
+        "func": lambda x: mask_address_to_city(x),
+        "has_level": False
+    },
+}
 
 
 def _apply_masking(chunk: pd.DataFrame, cols: list, method: str, head_n: int, tail_n: int, salt: str, regex_pat: str, preset: str) -> pd.DataFrame:
@@ -156,9 +267,10 @@ def _apply_masking(chunk: pd.DataFrame, cols: list, method: str, head_n: int, ta
                     st.error(f"正規表現エラー: {e}")
             else:
                 st.error("正規表現パターンを入力してください。")
-        elif method == "プリセット: Email/Phone/CreditCard":
-            fn = PRESETS[preset]["func"]
-            chunk[c] = s.apply(lambda x: fn(x) if x else "")
+        elif method == "プリセット: Email/Phone/Card/住所":
+            if preset in PRESETS:
+                fn = PRESETS[preset]["func"]
+                chunk[c] = s.apply(lambda x: fn(x) if x else "")
     return chunk
 
 
@@ -173,8 +285,8 @@ def stream_mask_save(path: str, header_has_names: bool, cols: list, method: str,
         if lower.endswith(suf):
             base = base[: -len(suf)]
             break
-    ext = ".tsv" if sep == "	" else ".csv"
-    out_name = f"{base}_maked{ext}"
+    ext = ".tsv" if sep == "\t" else ".csv"
+    out_name = f"{base}_masked{ext}"
     if gzip_save and ext == ".csv":
         out_name += ".gz"
     out_dir = out_dir or os.path.dirname(path)
@@ -212,19 +324,6 @@ def stream_mask_save(path: str, header_has_names: bool, cols: list, method: str,
     progress.progress(100, text="完了")
     return out_path
 
-
-# プリセット関数
-PRESETS = {
-    "Email(ドメインをマスク)": {
-        "func": lambda x: re.sub(r"([A-Za-z0-9._%+-]+)@([A-Za-z0-9.-]+)", lambda m: m.group(1) + "@" + "*" * len(m.group(2)), x)
-    },
-    "Phone(中間をマスク)": {
-        "func": lambda x: re.sub(r"(\d{2,4})([- ]?)(\d{2,4})([- ]?)(\d{3,4})", lambda m: m.group(1) + m.group(2) + "*" * len(m.group(3)) + m.group(4) + m.group(5), x)
-    },
-    "CreditCard(最後4桁残し)": {
-        "func": lambda x: (lambda digits: ("*" * max(0, len(digits) - 4)) + digits[-4:])(re.sub(r"[^\d]", "", x))
-    },
-}
 
 # -------------------------------
 # Input
@@ -293,7 +392,7 @@ method = st.sidebar.selectbox(
         "SHA256ハッシュ",
         "トークン化(一意マッピング)",
         "正規表現で一致部分のみマスク",
-        "プリセット: Email/Phone/CreditCard",
+        "プリセット: Email/Phone/Card/住所",
     ],
 )
 
@@ -301,7 +400,7 @@ head_n = st.sidebar.number_input("先頭に残す文字数", 0, 100, 2)
 _tail_n = st.sidebar.number_input("末尾に残す文字数", 0, 100, 2)
 salt = st.sidebar.text_input("ハッシュ用ソルト(任意)")
 regex_pat = st.sidebar.text_input("正規表現パターン (一致箇所を*)")
-preset = st.sidebar.selectbox("プリセット", list(PRESETS.keys())) if method == "プリセット: Email/Phone/CreditCard" else None
+preset = st.sidebar.selectbox("プリセット", list(PRESETS.keys())) if method == "プリセット: Email/Phone/Card/住所" else None
 
 # 保存前プレビュー適用ボタン（保存はしない）
 preview_btn = st.sidebar.button("👀 プレビューにマスク適用（保存なし）")
@@ -333,7 +432,7 @@ if 'preview_btn' in locals() and preview_btn:
         tail_n=int(_tail_n),
         salt=salt,
         regex_pat=regex_pat,
-        preset=preset if method == "プリセット: Email/Phone/CreditCard" else None,
+        preset=preset if method == "プリセット: Email/Phone/Card/住所" else None,
     )
 
 if st.session_state.preview_masked is not None:
@@ -366,7 +465,7 @@ if run_stream:
                 tail_n=int(_tail_n),
                 salt=salt,
                 regex_pat=regex_pat,
-                preset=preset if method == "プリセット: Email/Phone/CreditCard" else None,
+                preset=preset if method == "プリセット: Email/Phone/Card/住所" else None,
                 chunksize=int(chunksize),
                 out_dir=out_dir or None,
                 gzip_save=bool(gzip_save),
@@ -384,7 +483,9 @@ if run_stream:
         except Exception as e:
             st.info(f"出力プレビュー読込をスキップ: {e}")
 
-
+# -------------------------------
+# Download buttons
+# -------------------------------
 st.subheader("補助ダウンロード")
 st.download_button(
     "📥 トークンマップ(JSON)",
